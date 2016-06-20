@@ -1,4 +1,4 @@
-package firebase
+package go-GAE-firebase-verify
 
 import (
 	"crypto/rsa"
@@ -7,18 +7,20 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/dgrijalva/jwt-go"
+
+	"golang.org/x/net/context"
+	"google.golang.org/appengine/urlfetch"
 )
 
 const (
 	clientCertURL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
 )
 
-func VerifyIDToken(idToken string, googleProjectID string) (string, error) {
-	keys, err := fetchPublicKeys()
+func VerifyFirebaseToken(idToken string, googleProjectID string, ctx context.Context) (string, error) {
+	keys, err := fetchPublicKeys(ctx)
 
 	if err != nil {
 		return "", err
@@ -29,6 +31,10 @@ func VerifyIDToken(idToken string, googleProjectID string) (string, error) {
 			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
 		}
 		kid := token.Header["kid"]
+
+		if keys[kid.(string)] == nil {
+			return "", fmt.Errorf("Invalid key ID: %v", kid)
+		}
 
 		certPEM := string(*keys[kid.(string)])
 		certPEM = strings.Replace(certPEM, "\\n", "\n", -1)
@@ -45,13 +51,15 @@ func VerifyIDToken(idToken string, googleProjectID string) (string, error) {
 		return "", err
 	}
 
+	claims := parsedToken.Claims.(jwt.MapClaims)
+
 	errMessage := ""
 
-	if parsedToken.Claims["aud"].(string) != googleProjectID {
-		errMessage = "Firebase Auth ID token has incorrect 'aud' claim: " + parsedToken.Claims["aud"].(string)
-	} else if parsedToken.Claims["iss"].(string) != "https://securetoken.google.com/"+googleProjectID {
+	if claims["aud"].(string) != googleProjectID {
+		errMessage = "Firebase Auth ID token has incorrect 'aud' claim: " + claims["aud"].(string)
+	} else if claims["iss"].(string) != "https://securetoken.google.com/"+googleProjectID {
 		errMessage = "Firebase Auth ID token has incorrect 'iss' claim"
-	} else if parsedToken.Claims["sub"].(string) == "" || len(parsedToken.Claims["sub"].(string)) > 128 {
+	} else if claims["sub"].(string) == "" || len(claims["sub"].(string)) > 128 {
 		errMessage = "Firebase Auth ID token has invalid 'sub' claim"
 	}
 
@@ -59,11 +67,12 @@ func VerifyIDToken(idToken string, googleProjectID string) (string, error) {
 		return "", errors.New(errMessage)
 	}
 
-	return string(parsedToken.Claims["sub"].(string)), nil
+	return string(claims["sub"].(string)), nil
 }
 
-func fetchPublicKeys() (map[string]*json.RawMessage, error) {
-	resp, err := http.Get(clientCertURL)
+func fetchPublicKeys(ctx context.Context) (map[string]*json.RawMessage, error) {
+	client := urlfetch.Client(ctx)
+	resp, err := client.Get(clientCertURL)
 
 	if err != nil {
 		return nil, err
